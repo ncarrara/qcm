@@ -1,8 +1,22 @@
-from pyexpat.errors import messages
+import dataclasses
+import datetime
+import os
+from typing import List
 
 from anthropic import Anthropic
 from bs4 import BeautifulSoup
-import anthropic
+from dotenv import load_dotenv
+
+load_dotenv()  # loads variables from .env
+
+api_key = os.getenv("API_KEY")
+
+print(api_key)
+@dataclasses.dataclass
+class Question:
+    question: str
+    answer: List[str]
+    multichoice: bool
 
 if __name__ == '__main__':
 
@@ -17,6 +31,9 @@ if __name__ == '__main__':
 
     strs = []
 
+
+    questions = []
+
     for i, qa in enumerate(qas):
 
         is_multichoice = qa.find("div", class_="content")
@@ -28,65 +45,114 @@ if __name__ == '__main__':
             has_check_boxes = True
 
         checkbox_str = 'plusieurs réponses possible' if has_check_boxes else 'une seule réponse possible'
-        strs.append(f"{i + 1}) [{checkbox_str}] {question}")
+        question = f"[{checkbox_str}] {question}"
 
         answers = qa.find_all("div", attrs={"data-region": "answer-label"})
         labels = qa.find_all("span", class_="answernumber")
+
+        answers_ = []
         for label, answer in zip(labels, answers):
             answer = answer.find("p").get_text()
             answer = " ".join(answer.split())
             label = label.get_text()
             label = " ".join(label.split())
-            strs.append(f"{label} {answer}")
+            answers_.append(f"{label} {answer}")
 
-    qcm = "\n".join(strs)
+        q = Question(
+            question=question,
+            multichoice=has_check_boxes,
+            answer=answers_,
+        )
 
-    qcm = """
-    1) [une seule réponse possible] Une infraction punie d'une peine contraventionnelle est:
-    a. une infraction politique
-    b. un délit
-    c. un crime
-    d. une contravention
-    2) [une seule réponse possible] Le délai de prescription de l’action publique pour un délit est de?
-    a. 1 an
-    b. 3 ans
-    c. 6 ans
-    d. 20 ans
-    3) [une seule réponse possible] Pour une infraction continue, le point de départ du délai de prescription est
-    a. Le jour où l’acte a été commis
-    b. Le jour où cesse l’activité délictuelle
-    c. Le jour de la découverte de l’infraction
-    d. Le jour du jugement
-        """
+        questions.append(q)
+
+    # qcm = "\n".join(strs)
+    #
+    # qcm = """
+    # 1) [une seule réponse possible] Une infraction punie d'une peine contraventionnelle est:
+    # a. une infraction politique
+    # b. un délit
+    # c. un crime
+    # d. une contravention
+    # 2) [une seule réponse possible] Le délai de prescription de l’action publique pour un délit est de?
+    # a. 1 an
+    # b. 3 ans
+    # c. 6 ans
+    # d. 20 ans
+    # 3) [une seule réponse possible] Pour une infraction continue, le point de départ du délai de prescription est
+    # a. Le jour où l’acte a été commis
+    # b. Le jour où cesse l’activité délictuelle
+    # c. Le jour de la découverte de l’infraction
+    # d. Le jour du jugement
+    #     """
+
+
 
     prompt = ("Tu es un avocat en droit pénal. "
               "Tu dois répondre à ce QCM en ajoutant une petite explication. "
-              "Retourne un format html sans javascript, et met les réponses en gras et vert. "
+              "Retourne un format html sans javascript et met les réponses en gras et vert. "
               "Les mauvaises réponses en rouge:")
 
-    client = Anthropic(
-        api_key=key,  # This is the default and can be omitted
-    )
+    qcm = ""
+    for i,q in enumerate(questions):
+        qcm += f"{i+1}) {q.question}\n{'\n'.join(q.answer)}\n"
+    #
+    # with open("qcm2025.txt", "r", encoding="utf-8") as file:
+    #     qcm = file.read()
 
     message = prompt + "\n\n" + qcm
 
     print(message)
+    t = datetime.datetime.now()
 
-    message = client.messages.create(
-        max_tokens=1024*10,
-        messages=[
-            {
-                "role": "user",
-                "content": message,
-            }
-        ],
-        # thinking={"type": "adaptive"},
-        # output_config={"effort": "high"},
-        model="claude-opus-4-7",
+    client = Anthropic(
+        api_key=api_key,  # This is the default and can be omitted
     )
 
-    with open("answers.html", "w", encoding="utf-8") as file:
-        file.write(message.content[0].text.replace("```html", "").replace("```", ""))
+    streaming = True
+    if not streaming:
 
-    with open("answers.html", "r", encoding="utf-8") as file:
+        message = client.messages.create(
+            # max_tokens=100_000, #1024*10,
+            max_tokens=10_000, #1024*10,
+            messages=[
+                {
+                    "role": "user",
+                    "content": message,
+                }
+            ],
+            model="claude-opus-4-7",
+        )
+
+        clean_html= message.content[0].text
+
+
+    else:
+
+        with client.messages.stream(
+                model="claude-opus-4-7",
+                max_tokens=128000,
+                messages=[
+                    {"role": "user", "content": message}
+                ],
+        ) as stream:
+
+            full_text = ""
+
+            for event in stream:
+                if event.type == "content_block_delta":
+                    chunk = event.delta.text
+                    print(chunk, end="", flush=True)  # live output
+                    full_text += chunk
+
+        # Save result after streaming completes
+        clean_html = full_text.replace("```html", "").replace("```", "")
+
+    with open("hello.html", "w", encoding="utf-8") as f:
+        f.write(clean_html)
+    t1 = datetime.datetime.now()
+
+    print((t-t1).total_seconds())
+
+    with open("hello.html", "r", encoding="utf-8") as file:
         print(file.read())
